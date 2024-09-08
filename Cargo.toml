@@ -1,0 +1,17 @@
+[package]
+name = "OptiFunkin"
+description = "Sparrow Atlas Repacker and Optimizer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.17", features = ["derive", "unicode", "wrap_help"] }
+image = "0.25.2"
+max_rects = { git = "https://github.com/CobaltBar/max_rects.git", version = "1.0.2" }
+oxipng = { version = "9.*", features = [
+	"parallel",
+	"zopfli",
+	"filetime",
+], default-features = false }
+quick-xml = "0.36.1"
+tempfile = "3.12.0"
