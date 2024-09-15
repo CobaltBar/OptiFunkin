@@ -16,7 +16,6 @@ oxipng = { version = "9.*", features = [
 	"zopfli",
 	"filetime",
 ], default-features = false }
-quick-xml = "0.36.1"
 rayon = "1.10.0"
 tempfile = "3.12.0"
 walkdir = "2.5.0"

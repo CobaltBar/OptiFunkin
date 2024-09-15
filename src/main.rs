@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use log::{error, warn};
 use rayon::prelude::*;
+use tempfile::{Builder, TempDir};
 use walkdir::WalkDir;
 
 fn main() {
@@ -13,16 +14,33 @@ fn main() {
 
     let all_files = get_files(cli.files, cli.recursive);
 
-    let to_repack = all_files
-        .par_iter()
-        .filter(|f| match f.extension() {
-            Some(ext) => ext == "png" && Path::new(&f.with_extension("xml")).exists(),
-            None => false,
-        })
-        .collect::<Vec<&PathBuf>>();
+    let temp_dir: TempDir;
 
-    
+    match Builder::new().prefix("optifunkin").tempdir() {
+        Ok(t) => temp_dir = t,
+        Err(e) => {
+            error!("Failed to create temporary directory: {}", e);
+            return;
+        }
+    };
+
+    repack_atlases(
+        all_files
+            .par_iter()
+            .filter(|f| match f.extension() {
+                Some(ext) => ext == "png" && Path::new(&f.with_extension("xml")).exists(),
+                None => false,
+            })
+            .collect::<Vec<&PathBuf>>(),
+    );
+
+    match temp_dir.close() {
+        Err(e) => error!("Failed to remove temporary directory: {}", e),
+        _ => {}
+    };
 }
+
+fn repack_atlases(files: Vec<&PathBuf>) {}
 
 fn get_files(files: Vec<PathBuf>, recursive: bool) -> Vec<PathBuf> {
     //Check and warn of paths that don't exist
