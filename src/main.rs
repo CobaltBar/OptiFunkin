@@ -1,11 +1,16 @@
 mod cli;
 mod logconfig;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use clap::Parser;
 use log::{error, warn};
+use max_rects::{bucket::Bucket, max_rects::MaxRects, packing_box::PackingBox};
 use rayon::prelude::*;
-use tempfile::{Builder, TempDir};
+use roxmltree::Document;
+use tempfile::Builder;
 use walkdir::WalkDir;
 
 fn main() {
@@ -14,10 +19,8 @@ fn main() {
 
     let all_files = get_files(cli.files, cli.recursive);
 
-    let temp_dir: TempDir;
-
-    match Builder::new().prefix("optifunkin").tempdir() {
-        Ok(t) => temp_dir = t,
+    let temp_dir: tempfile::TempDir = match Builder::new().prefix("optifunkin").tempdir() {
+        Ok(t) => t,
         Err(e) => {
             error!("Failed to create temporary directory: {}", e);
             return;
@@ -40,7 +43,73 @@ fn main() {
     };
 }
 
-fn repack_atlases(files: Vec<&PathBuf>) {}
+fn repack_atlases(files: Vec<&PathBuf>) {
+    let text = match fs::read_to_string(files[0].with_extension("xml")) {
+        Ok(txt) => txt,
+        Err(e) => {
+            error!("XML Reading Error: {}", e);
+            return;
+        }
+    };
+
+    let doc = match Document::parse(&text) {
+        Ok(doc) => doc,
+        Err(e) => {
+            error!("XML Parsing Error: {}", e);
+            return;
+        }
+    };
+
+    let mut rects: Vec<Vec<i32>> = Vec::new();
+
+    for element in doc.descendants() {
+        if element.is_element() {
+            //TODO proper checks
+            if let Some(_) = element.attribute("x") {
+                let mut rect = vec![
+                    element.attribute("x").unwrap().parse::<i32>().unwrap(),
+                    element.attribute("y").unwrap().parse::<i32>().unwrap(),
+                    element.attribute("width").unwrap().parse::<i32>().unwrap(),
+                    element.attribute("height").unwrap().parse::<i32>().unwrap(),
+                ];
+
+                if let Some(_) = element.attribute("frameX") {
+                    rect.push(element.attribute("frameX").unwrap().parse::<i32>().unwrap());
+                    rect.push(element.attribute("frameY").unwrap().parse::<i32>().unwrap());
+                    rect.push(
+                        element
+                            .attribute("frameWidth")
+                            .unwrap()
+                            .parse::<i32>()
+                            .unwrap(),
+                    );
+                    rect.push(
+                        element
+                            .attribute("frameHeight")
+                            .unwrap()
+                            .parse::<i32>()
+                            .unwrap(),
+                    );
+                }
+
+                rects.push(rect);
+            }
+        }
+    }
+
+    let mut boxes: Vec<PackingBox> = vec![];
+    let bins = vec![Bucket::new(1024, 1024, 0, 0, 1)];
+
+    for rect in rects {
+        boxes.push(PackingBox::new(rect[2], rect[3]));
+    }
+
+    let (_, unplaced, _) = MaxRects::new(boxes.clone(), bins.clone()).place();
+
+    if unplaced.len() > 0 {
+        error!("Failed to place all objects");
+    }
+}
 
 fn get_files(files: Vec<PathBuf>, recursive: bool) -> Vec<PathBuf> {
     //Check and warn of paths that don't exist
