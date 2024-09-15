@@ -1,6 +1,7 @@
 mod cli;
 mod logconfig;
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     thread,
@@ -8,11 +9,14 @@ use std::{
 };
 
 use clap::Parser;
-use image::ImageReader;
+use image::{DynamicImage, ImageReader};
 use log::{error, warn};
-use max_rects::{bucket::Bucket, max_rects::MaxRects, packing_box::PackingBox};
+use max_rects::{
+    bucket::Bucket, calculate_packed_percentage, max_rects::MaxRects, packing_box::PackingBox,
+};
 use rayon::prelude::*;
 use roxmltree::Document;
+use sanitize_filename::sanitize;
 use tempfile::Builder;
 use walkdir::WalkDir;
 
@@ -25,7 +29,7 @@ fn main() {
     let temp_dir: tempfile::TempDir = match Builder::new().prefix("optifunkin").tempdir() {
         Ok(t) => t,
         Err(e) => {
-            error!("Failed to create temporary directory: {}", e);
+            error!("Temporary Directory Creation Error: {}", e);
             return;
         }
     };
@@ -45,7 +49,7 @@ fn main() {
     thread::sleep(Duration::from_secs(30));
 
     match temp_dir.close() {
-        Err(e) => error!("Failed to remove temporary directory: {}", e),
+        Err(e) => error!("Temporary Directory Removal Error: {}", e),
         _ => {}
     };
 }
@@ -56,7 +60,7 @@ fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
             Ok(txt) => txt,
             Err(e) => {
                 error!("XML Reading Error: {}", e);
-                return;
+                continue;
             }
         };
 
@@ -64,7 +68,7 @@ fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
             Ok(doc) => doc,
             Err(e) => {
                 error!("XML Parsing Error: {}", e);
-                return;
+                continue;
             }
         };
 
@@ -73,17 +77,16 @@ fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
                 Ok(image) => image,
                 Err(e) => {
                     error!("Image decoding error: {}", e);
-                    return;
+                    continue;
                 }
             },
             Err(e) => {
                 error!("Image reading error: {}", e);
-                return;
+                continue;
             }
         };
 
-        //TODO use a hashmap Name->Vec<Vec<i32>>
-        let mut rects: Vec<Vec<i32>> = Vec::new();
+        let mut rects: HashMap<String, Vec<i32>> = HashMap::new();
 
         for element in doc.descendants() {
             if element.is_element() {
@@ -115,26 +118,24 @@ fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
                         );
                     }
 
-                    rects.retain(|r| {
-                        !(r[0] == rect[0] && r[1] == rect[1] && r[2] == rect[2] && r[3] == rect[3])
-                    });
-                    rects.push(rect);
+                    rects.retain(|_, r| &r[..4] != &rect[..4]);
+                    rects.insert(element.attribute("name").unwrap().to_string(), rect);
                 }
             }
         }
 
         let boxes: Vec<PackingBox> = rects
             .iter()
-            .map(|rect| PackingBox::new(rect[2], rect[3]))
+            .map(|(_, rect)| PackingBox::new(rect[2], rect[3]))
             .collect();
 
         let bins = vec![Bucket::new(
             rects
                 .iter()
-                .fold(i32::MIN, |acc, rect| acc.max(rect[0] + rect[2])),
+                .fold(i32::MIN, |acc, (_, rect)| acc.max(rect[0] + rect[2])),
             rects
                 .iter()
-                .fold(i32::MIN, |acc, rect| acc.max(rect[1] + rect[3])),
+                .fold(i32::MIN, |acc, (_, rect)| acc.max(rect[1] + rect[3])),
             0,
             0,
             1,
@@ -142,25 +143,51 @@ fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
 
         let (placed, unplaced, _) = MaxRects::new(boxes.clone(), bins.clone()).place();
 
+        let folder = temp_dir.join(file.with_extension("").file_name().unwrap());
+
         if unplaced.len() > 0 {
-            error!("Failed to place all objects");
-            return;
+            error!(
+                "Rect Placement Error on {}\n{}% packed\nUnplaced: {:?}\n",
+                folder.display(),
+                calculate_packed_percentage(&boxes, &bins),
+                unplaced,
+            );
+            continue;
         }
 
-        let mut images: Vec<image::DynamicImage> = Vec::new();
+        let mut images: HashMap<String, DynamicImage> = HashMap::new();
 
-        for rect in rects {
-            images.push(image.crop_imm(
-                rect[0].try_into().unwrap(),
-                rect[1].try_into().unwrap(),
-                rect[2].try_into().unwrap(),
-                rect[3].try_into().unwrap(),
-            ));
+        for (name, rect) in rects {
+            images.insert(
+                name,
+                image.crop_imm(
+                    rect[0].try_into().unwrap(),
+                    rect[1].try_into().unwrap(),
+                    rect[2].try_into().unwrap(),
+                    rect[3].try_into().unwrap(),
+                ),
+            );
         }
 
-        for img in images {
-            img.save_with_format(temp_dir.join("a.png"), image::ImageFormat::Png)
-                .unwrap();
+        match fs::create_dir(&folder) {
+            Err(e) => {
+                error!("Directory Creation Error: {}", e);
+                continue;
+            }
+            _ => {}
+        };
+
+        for (name, img) in images {
+            match img.save_with_format(
+                temp_dir.join(&folder).join(sanitize(name) + ".png"),
+                image::ImageFormat::Png,
+            ) {
+                Err(e) => {
+                    error!("Image Saving Error: {}", e);
+                    continue;
+                }
+                _ => {}
+            };
         }
     }
 }
@@ -216,5 +243,5 @@ fn get_files(files: Vec<PathBuf>, recursive: bool) -> Vec<PathBuf> {
         }
     }
 
-    return iterfiles;
+    iterfiles
 }
