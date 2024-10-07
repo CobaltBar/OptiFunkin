@@ -9,11 +9,9 @@ use std::{
 };
 
 use clap::Parser;
-use image::{DynamicImage, ImageReader};
+use image::{imageops, DynamicImage, ImageBuffer, ImageReader};
 use log::{error, warn};
-use max_rects::{
-    bucket::Bucket, calculate_packed_percentage, max_rects::MaxRects, packing_box::PackingBox,
-};
+
 use rayon::prelude::*;
 use roxmltree::Document;
 use sanitize_filename::sanitize;
@@ -56,6 +54,7 @@ fn main() {
 
 fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
     for file in files {
+        //Read XML
         let text = match fs::read_to_string(file.with_extension("xml")) {
             Ok(txt) => txt,
             Err(e) => {
@@ -87,7 +86,6 @@ fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
         };
 
         let mut rects: HashMap<String, Vec<i32>> = HashMap::new();
-
         for element in doc.descendants() {
             if element.is_element() {
                 //TODO proper checks
@@ -124,49 +122,34 @@ fn repack_atlases(files: Vec<&PathBuf>, temp_dir: &PathBuf) {
             }
         }
 
-        let boxes: Vec<PackingBox> = rects
-            .iter()
-            .map(|(_, rect)| PackingBox::new(rect[2], rect[3]))
-            .collect();
-
-        let bins = vec![Bucket::new(
-            rects
-                .iter()
-                .fold(i32::MIN, |acc, (_, rect)| acc.max(rect[0] + rect[2])),
-            rects
-                .iter()
-                .fold(i32::MIN, |acc, (_, rect)| acc.max(rect[1] + rect[3])),
-            0,
-            0,
-            1,
-        )];
-
-        let (placed, unplaced, _) = MaxRects::new(boxes.clone(), bins.clone()).place();
-
         let folder = temp_dir.join(file.with_extension("").file_name().unwrap());
-
-        if unplaced.len() > 0 {
-            error!(
-                "Rect Placement Error on {}\n{}% packed\nUnplaced: {:?}\n",
-                folder.display(),
-                calculate_packed_percentage(&boxes, &bins),
-                unplaced,
-            );
-            continue;
-        }
 
         let mut images: HashMap<String, DynamicImage> = HashMap::new();
 
         for (name, rect) in rects {
-            images.insert(
-                name,
-                image.crop_imm(
-                    rect[0].try_into().unwrap(),
-                    rect[1].try_into().unwrap(),
-                    rect[2].try_into().unwrap(),
-                    rect[3].try_into().unwrap(),
-                ),
+            let mut img = image.crop_imm(
+                rect[0].try_into().unwrap(),
+                rect[1].try_into().unwrap(),
+                rect[2].try_into().unwrap(),
+                rect[3].try_into().unwrap(),
             );
+
+            if rect.len() == 8 {
+                let mut new_img = ImageBuffer::from_pixel(
+                    rect[6].try_into().unwrap(),
+                    rect[7].try_into().unwrap(),
+                    image::Rgba([0, 0, 0, 0]),
+                );
+
+                let x: i64 = rect[4].try_into().unwrap();
+                let y: i64 = rect[5].try_into().unwrap();
+
+                imageops::overlay(&mut new_img, &img, -x, -y);
+
+                img = DynamicImage::ImageRgba8(new_img);
+            }
+
+            images.insert(name, img);
         }
 
         match fs::create_dir(&folder) {
